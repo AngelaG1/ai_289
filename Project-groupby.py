@@ -1,7 +1,7 @@
 
 # coding: utf-8
 
-# In[1]:
+# In[ ]:
 
 
 import gc
@@ -10,20 +10,21 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # Load subset of the training data
-X_train = pd.read_csv('train.csv', nrows=1000000, parse_dates=['click_time'])
-
+X_train = pd.read_csv('train.csv', parse_dates=['click_time'])
+X_test = pd.read_csv('test.csv', parse_dates=['click_time'])
 # Show the head of the table
-X_train.head()
+total = X_train.append(X_test)
+total.head()
 
 
 # In[2]:
 
 
-X_train['day'] = X_train['click_time'].dt.day.astype('uint8')
-X_train['hour'] = X_train['click_time'].dt.hour.astype('uint8')
-X_train['minute'] = X_train['click_time'].dt.minute.astype('uint8')
-X_train['second'] = X_train['click_time'].dt.second.astype('uint8')
-X_train.head()
+total['day'] = total['click_time'].dt.day.astype('uint8')
+total['hour'] = total['click_time'].dt.hour.astype('uint8')
+total['minute'] = total['click_time'].dt.minute.astype('uint8')
+total['second'] = total['click_time'].dt.second.astype('uint8')
+total.head()
 
 
 # In[3]:
@@ -55,8 +56,9 @@ for cols in ATTRIBUTION_CATEGORIES:
     # New feature name
     new_feature = '_'.join(cols)+'_confRate'    
     
+   
     # Perform the groupby
-    group_object = X_train.groupby(cols)
+    group_object = total.groupby(cols)
     
     # Group sizes    
     group_sizes = group_object.size()
@@ -77,18 +79,14 @@ for cols in ATTRIBUTION_CATEGORIES:
         return rate * conf
     
     # Perform the merge
-    X_train = X_train.merge(
-        group_object['is_attributed']. \
-            apply(rate_calculation). \
-            reset_index(). \
-            rename( 
-                index=str,
-                columns={'is_attributed': new_feature}
-            )[cols + [new_feature]],
-        on=cols, how='left'
-    )
-    
-X_train.head()
+
+    total = total.merge(X_train.groupby(cols)['is_attributed'].               apply(rate_calculation).               reset_index().               rename(
+              index=str,
+              columns={'is_attributed': new_feature}
+              )[cols + [new_feature]],
+              on=cols, how='left'
+            )
+    total.head()
 
 
 # In[4]:
@@ -161,22 +159,22 @@ for spec in GROUPBY_AGGREGATIONS:
     all_features = list(set(spec['groupby'] + [spec['select']]))
     
     # Perform the groupby
-    gp = X_train[all_features].         groupby(spec['groupby'])[spec['select']].         agg(spec['agg']).         reset_index().         rename(index=str, columns={spec['select']: new_feature})
+    gp = total[all_features].         groupby(spec['groupby'])[spec['select']].         agg(spec['agg']).         reset_index().         rename(index=str, columns={spec['select']: new_feature})
         
     # Merge back to X_total
     if 'cumcount' == spec['agg']:
-        X_train[new_feature] = gp[0].values
+        total[new_feature] = gp[0].values
     else:
-        X_train = X_train.merge(gp, on=spec['groupby'], how='left')
+        total = total.merge(gp, on=spec['groupby'], how='left')
         
      # Clear memory
     del gp
     gc.collect()
 
-X_train.head()
+total.head()
 
 
-# In[6]:
+# In[5]:
 
 
 GROUP_BY_NEXT_CLICKS = [
@@ -204,12 +202,12 @@ for spec in GROUP_BY_NEXT_CLICKS:
     
     # Run calculation
     print(">> Grouping by {spec['groupby']}, and saving time to next click in: {new_feature}")
-    X_train[new_feature] = X_train[all_features].groupby(spec['groupby']).click_time.transform(lambda x: x.diff().shift(-1)).dt.seconds
+    total[new_feature] = total[all_features].groupby(spec['groupby']).click_time.transform(lambda x: x.diff().shift(-1)).dt.seconds
+    total.head()
     
-X_train.head()
 
 
-# In[7]:
+# In[6]:
 
 
 HISTORY_CLICKS = {
@@ -221,83 +219,142 @@ HISTORY_CLICKS = {
 for fname, fset in HISTORY_CLICKS.items():
     
     # Clicks in the past
-    X_train['prev_'+fname] = X_train.         groupby(fset).         cumcount().         rename('prev_'+fname)
+    total['prev_'+fname] = total.         groupby(fset).         cumcount().         rename('prev_'+fname)
         
     # Clicks in the future
-    X_train['future_'+fname] = X_train.iloc[::-1].         groupby(fset).         cumcount().         rename('future_'+fname).iloc[::-1]
+    total['future_'+fname] = total.iloc[::-1].         groupby(fset).         cumcount().         rename('future_'+fname).iloc[::-1]
 
 # Count cumulative subsequent clicks
-X_train.head()
+total.head()
+
+
+# In[7]:
+
+
+total.head()
 
 
 # In[8]:
 
 
-test_df = pd.read_csv('test.csv')
+total.info()
 
 
-# In[9]:
+# In[33]:
 
 
-total_df = X_train.append(test_df)
+import xgboost as xgb
+
+# Split into X and y
+y = total['is_attributed']
+X = total.drop('is_attributed', axis=1).select_dtypes(include=[np.number])
+
+x_ = X[0:100000]
+y_ = y[0:100000]
+x__ = X[100000:200000]
+y__ = y[100000:200000]
+
+# Create a model
+# Params from: https://www.kaggle.com/aharless/swetha-s-xgboost-revised
+clf_xgBoost = xgb.XGBClassifier(
+    max_depth = 4,
+    subsample = 0.8,
+    colsample_bytree = 0.7,
+    colsample_bylevel = 0.7,
+    scale_pos_weight = 9,
+    min_child_weight = 0,
+    reg_alpha = 4,
+    n_jobs = 4, 
+    objective = 'binary:logistic'
+    
+    #roc_auc = 0.867
+    #eta = 0.3,
+    #tree_method =  "hist",
+    #grow_policy = "lossguide",
+    #max_leaves = 10000,  
+    #max_depth = 0, 
+    #subsample = 0.5, 
+    #alpha = 4,
+    #objective = 'binary:logistic', 
+    #scale_pos_weight = 50,
+    #eval_metric =  'auc', 
+    #nthread = 24,
+    #silent = 1
+    
+)
+# Fit the models
+clf_xgBoost.fit(x_, y_)
 
 
-# In[11]:(for test I dont understand)
+# In[10]:
 
 
-total_df = total_df.merge(
+from sklearn import preprocessing
 
-    X_train.groupby(cols)['is_attributed']. \
+# Get xgBoost importances
+importance_dict = {}
+for import_type in ['weight', 'gain', 'cover']:
+    importance_dict['xgBoost-'+import_type] = clf_xgBoost.get_booster().get_score(importance_type=import_type)
+    
+# MinMax scale all importances
+importance_df = pd.DataFrame(importance_dict).fillna(0)
+importance_df = pd.DataFrame(
+    preprocessing.MinMaxScaler().fit_transform(importance_df),
+    columns=importance_df.columns,
+    index=importance_df.index
+)
 
-    apply(rate_calculation). \
+# Create mean column
+importance_df['mean'] = importance_df.mean(axis=1)
 
-    reset_index(). \
-
-    rename( 
-
-        index=str,
-
-        columns={'is_attributed': new_feature}
-
-    )[cols + [new_feature]],
-
-    on=cols, how='left'
-
-) 
-
-
-# In[12]:
+# Plot the feature importances
+importance_df.sort_values('mean').plot(kind='bar', figsize=(20, 7))
 
 
-total_df.size
+# In[34]:
 
 
-# In[13]:
+prediction = clf_xgBoost.predict(x__)
 
 
-X_train.size
+
+# In[21]:
 
 
-# In[14]:
+prediction.shape
+        
 
 
-X_train.shape
+# In[23]:
 
 
-# In[15]:
+prediction[1:20000]
 
 
-total_df.shape
+# In[35]:
 
 
-# In[16]:
+for i in range(len(prediction)):
+    if prediction[i] != 0:
+        print i, prediction[i]
+        
+        
 
 
-total_df.head()
+# In[36]:
 
 
-# In[17]:
+y__.describe()
 
 
-X_train.head()
+# In[29]:
+
+
+y__.fillna(0)
+
+
+# In[37]:
+
+
+total['is_attributed']
 
